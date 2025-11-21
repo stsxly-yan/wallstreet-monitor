@@ -52,3 +52,27 @@
 1. **Clone the repo**:
    ```bash
    git clone [https://github.com/YOUR_USERNAME/wallstreet-monitor.git](https://github.com/YOUR_USERNAME/wallstreet-monitor.git)
+Install dependencies:
+
+Bash
+
+pip install -r requirements.txt
+Configure Secrets: Create .streamlit/secrets.toml (or set in Streamlit Cloud):
+
+Ini, TOML
+
+DEEPSEEK_API_KEY = "sk-your-key"
+
+[admin]
+username = "admin"
+password = "your_password"
+
+[users]
+user1 = "password123"
+Run the App:
+
+Bash
+
+streamlit run opp.py
+📝 License
+This project is for educational and research purposes only. Investment involves risk. 本项目仅供学习与研究，不构成投资建议。
