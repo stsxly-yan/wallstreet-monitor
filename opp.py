@@ -8,230 +8,217 @@ import plotly.graph_objects as go
 import requests
 import datetime
 import time
-import random
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="DeepSeek 智能风控仪表盘", layout="wide", page_icon="🦈")
 
-# --- 2. 侧边栏：全局控制中心 ---
+# --- 2. 侧边栏：控制中心 ---
 st.sidebar.title("⚙️ 控制中心")
 
-# A. 刷新控制
-st.sidebar.subheader("⏱️ 刷新设置")
-if st.sidebar.button("🔄 立即刷新数据 (Refresh Now)", type="primary"):
-    st.rerun()
+# A. 自动获取 Secrets 中的 API Key
+# 优先读取云端后台配置，如果没有，再显示输入框
+if "DEEPSEEK_API_KEY" in st.secrets:
+    api_key = st.secrets["DEEPSEEK_API_KEY"]
+    st.sidebar.success("✅ API Key 已从云端安全加载")
+else:
+    api_key = st.sidebar.text_input("DeepSeek API Key", type="password", placeholder="sk-...")
 
-refresh_rate = st.sidebar.slider("自动刷新间隔 (分钟)", 5, 60, 30)
-
-# B. API 设置
-st.sidebar.markdown("---")
-st.sidebar.subheader("🤖 模型设置")
-api_key = st.sidebar.text_input("DeepSeek API Key", type="password", placeholder="sk-...")
 MODEL_NAME = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
 
-# C. 快捷工具
+# B. 刷新控制
+st.sidebar.subheader("⏱️ 刷新设置")
+if st.sidebar.button("🔄 立即刷新数据", type="primary"):
+    st.rerun()
+
+refresh_rate = st.sidebar.slider("自动刷新 (分钟)", 5, 60, 30)
+
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔗 快捷入口")
-st.sidebar.markdown("[📅 财经日历 (Investing)](https://cn.investing.com/economic-calendar/)")
+st.sidebar.markdown("[📅 财经日历](https://cn.investing.com/economic-calendar/)")
 st.sidebar.caption(f"更新时间: {datetime.datetime.now().strftime('%H:%M:%S')}")
 
-# --- 3. 核心逻辑函数 ---
+# --- 3. 初始化 AI 记忆 (Session State) ---
+# 这是页面刷新不丢失内容的关键
+if 'ai_history' not in st.session_state:
+    st.session_state['ai_history'] = [] # 存储历史报告列表
 
-# A. 获取 CNN 恐慌贪婪指数 (增强伪装版)
+# --- 4. 核心逻辑函数 ---
+
 @st.cache_data(ttl=3600) 
 def get_cnn_fear_greed_index():
     try:
         url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
-        # 伪装成真实的 Mac Chrome 浏览器
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.cnn.com/",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-            "Pragma": "no-cache"
+            "Referer": "https://www.cnn.com/"
         }
-        # 增加超时时间到 10秒
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            latest = data['fear_and_greed_historical']['data'][-1]
-            return int(latest['y']), "CNN 官方数据"
+            return int(data['fear_and_greed_historical']['data'][-1]['y']), "CNN 官方数据"
         return None, None
-    except:
-        return None, None
+    except: return None, None
 
-# B. 画仪表盘 (通用版)
-def plot_gauge(score, source_label):
+def plot_gauge(score, source):
     if score is None: return go.Figure()
-    
-    # 动态变色
     color = "#GRAY"
-    if score > 75: color = "#FF4B4B" # 极度贪婪
-    elif score > 55: color = "#FF8C00" # 贪婪
-    elif score < 25: color = "#006400" # 极度恐慌
-    elif score < 45: color = "#00CC96" # 恐慌
+    if score > 75: color = "#FF4B4B"
+    elif score > 55: color = "#FF8C00"
+    elif score < 25: color = "#006400"
+    elif score < 45: color = "#00CC96"
     
     fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = score,
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': f"市场情绪 ({source_label})", 'font': {'size': 18}},
+        mode = "gauge+number", value = score,
+        title = {'text': f"市场情绪 ({source})", 'font': {'size': 18}},
         number = {'font': {'size': 40, 'color': color}},
-        gauge = {
-            'axis': {'range': [0, 100]},
-            'bar': {'color': color},
-            'steps': [
-                {'range': [0, 25], 'color': 'rgba(0, 255, 0, 0.2)'},
-                {'range': [75, 100], 'color': 'rgba(255, 0, 0, 0.2)'}
-            ],
-        }
+        gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': color},
+                 'steps': [{'range': [0, 25], 'color': 'rgba(0,255,0,0.2)'}, {'range': [75, 100], 'color': 'rgba(255,0,0,0.2)'}]}
     ))
     fig.update_layout(height=250, margin=dict(l=10, r=10, t=40, b=10))
     return fig
 
-# C. 情绪分析
 def analyze_sentiment_tag(text):
-    analysis = TextBlob(text)
-    score = analysis.sentiment.polarity
-    if score > 0.3: return "🟢 极度乐观", "green", score
-    elif 0.1 < score <= 0.3: return "🥬 偏多", "green", score
-    elif -0.1 <= score <= 0.1: return "⚪ 中性", "gray", score
-    elif -0.3 <= score < -0.1: return "🟠 偏空", "orange", score
-    else: return "🔴 极度悲观", "red", score
+    s = TextBlob(text).sentiment.polarity
+    if s > 0.3: return "🟢 极度乐观", "green"
+    elif 0.1 < s <= 0.3: return "🥬 偏多", "green"
+    elif -0.1 <= s <= 0.1: return "⚪ 中性", "gray"
+    elif -0.3 <= s < -0.1: return "🟠 偏空", "orange"
+    else: return "🔴 极度悲观", "red"
 
-# D. 计算 RSI
-def calculate_rsi(data, window=14):
-    try:
-        delta = data['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-        rs = gain / loss
-        return 100 - (100 / (1 + rs))
-    except:
-        return pd.Series([50]*len(data))
-
-# E. 获取市场数据
 @st.cache_data(ttl=300)
 def get_market_data():
-    tickers = yf.Tickers("SPY QQQ IEF") 
-    hist = tickers.history(period="3mo")
-    return hist
+    return yf.Tickers("SPY QQQ IEF").history(period="3mo")
 
-# --- 4. 主界面布局 ---
-st.title("🦈 华尔街风向标 (Pro)")
-st.caption(f"数据时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# --- 5. 主界面 ---
+st.title("🦈 华尔街风向标 (AI Memory Ver.)")
+st.caption(f"当前时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 try:
-    # 1. 数据层
+    # 数据与图表
     market_data = get_market_data()
+    spy = market_data['Close']['SPY'].dropna()
+    qqq = market_data['Close']['QQQ'].dropna()
+    ief = market_data['Close']['IEF'].dropna()
     
-    def safe_metric(sym):
-        try:
-            s = market_data['Close'][sym].dropna()
-            if len(s) < 2: return 0, 0
-            val = s.iloc[-1]
-            chg = val - s.iloc[-2]
-            return val, chg
-        except: return 0, 0
+    cnn_score, cnn_src = get_cnn_fear_greed_index()
+    if cnn_score is None:
+        # RSI Backup
+        delta = spy.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        cnn_score = 100 - (100 / (1 + rs)).iloc[-1]
+        cnn_src = "RSI 模拟值"
 
-    spy_val, spy_chg = safe_metric("SPY")
-    qqq_val, qqq_chg = safe_metric("QQQ")
-    ief_val, ief_chg = safe_metric("IEF")
-
-    # 2. 智能仪表盘逻辑
-    # 优先取 CNN，如果失败，取 RSI 模拟
-    gauge_score, gauge_source = get_cnn_fear_greed_index()
-    
-    # 计算 RSI 作为备用
-    try:
-        spy_data = market_data.xs('SPY', level=1, axis=1) if isinstance(market_data.columns, pd.MultiIndex) else market_data
-        rsi_val = calculate_rsi(spy_data).iloc[-1]
-    except:
-        rsi_val = 50
-
-    # 替补逻辑
-    if gauge_score is None:
-        gauge_score = rsi_val
-        gauge_source = "RSI 模拟值 (CNN超时)"
-
-    # 3. 可视化布局
-    col_metrics, col_gauge = st.columns([2, 1])
-
-    with col_metrics:
+    c1, c2 = st.columns([2, 1])
+    with c1:
         st.subheader("1. 核心资产")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("📈 标普500", f"${spy_val:.1f}", f"{spy_chg:.2f}")
-        c2.metric("💻 纳指", f"${qqq_val:.1f}", f"{qqq_chg:.2f}")
-        c3.metric("⚖️ 国债", f"${ief_val:.2f}", f"{ief_chg:.2f}", help="红跌=利空")
-        
-        st.markdown("---")
-        st.subheader("2. 趋势图")
-        chart_df = pd.DataFrame({'SPY': market_data['Close']['SPY'], 'QQQ': market_data['Close']['QQQ']})
-        st.line_chart(chart_df, height=200)
+        m1, m2, m3 = st.columns(3)
+        m1.metric("标普500", f"${spy.iloc[-1]:.1f}", f"{spy.iloc[-1]-spy.iloc[-2]:.2f}")
+        m2.metric("纳指QQQ", f"${qqq.iloc[-1]:.1f}", f"{qqq.iloc[-1]-qqq.iloc[-2]:.2f}")
+        m3.metric("国债IEF", f"${ief.iloc[-1]:.1f}", f"{ief.iloc[-1]-ief.iloc[-2]:.2f}")
+        st.line_chart(pd.DataFrame({'SPY': spy, 'QQQ': qqq}), height=200)
+    
+    with c2:
+        st.subheader("情绪表")
+        st.plotly_chart(plot_gauge(cnn_score, cnn_src), use_container_width=True)
 
-    with col_gauge:
-        st.subheader("恐慌情绪表")
-        # 无论 CNN 是否成功，这里都会显示一个图
-        fig = plot_gauge(gauge_score, gauge_source)
-        st.plotly_chart(fig, use_container_width=True)
-        if "RSI" in gauge_source:
-            st.caption("⚠️ 注：因云端网络限制，CNN 暂时无法连接，当前显示基于 RSI 的模拟情绪值。")
+except Exception as e: st.error(f"数据错误: {e}")
 
-except Exception as e:
-    st.error(f"核心数据加载失败: {e}")
-
-# --- 5. 新闻情报流 ---
+# --- 6. AI 智能情报台 (含记忆功能) ---
 st.markdown("---")
-st.subheader("3. 全球情报流")
+st.subheader("3. DeepSeek 智能研报 (带历史记忆)")
 
 rss_feeds = {
-    "Goldman Sachs": "https://news.google.com/rss/search?q=Goldman+Sachs+outlook+when:7d&hl=en-US&gl=US&ceid=US:en",
-    "Morgan Stanley": "https://news.google.com/rss/search?q=Morgan+Stanley+market+outlook+when:7d&hl=en-US&gl=US&ceid=US:en",
-    "Market Risk": "https://news.google.com/rss/search?q=stock+market+crash+warning+when:2d&hl=en-US&gl=US&ceid=US:en"
+    "Goldman": "https://news.google.com/rss/search?q=Goldman+Sachs+outlook+when:7d&hl=en-US&gl=US&ceid=US:en",
+    "Morgan": "https://news.google.com/rss/search?q=Morgan+Stanley+market+outlook+when:7d&hl=en-US&gl=US&ceid=US:en",
+    "Risk": "https://news.google.com/rss/search?q=stock+market+crash+warning+when:2d&hl=en-US&gl=US&ceid=US:en"
 }
 
+# 抓取新闻
 all_news = []
 for src, url in rss_feeds.items():
     try:
         f = feedparser.parse(url)
         for e in f.entries:
-            ts = 0
-            time_str = ""
-            if hasattr(e, 'published_parsed') and e.published_parsed:
-                ts = time.mktime(e.published_parsed)
-                time_str = datetime.datetime.fromtimestamp(ts).strftime('%m-%d %H:%M')
-            all_news.append({"source": src, "title": e.title, "link": e.link, "time_str": time_str, "timestamp": ts})
+            ts = time.mktime(e.published_parsed) if hasattr(e, 'published_parsed') else 0
+            all_news.append({"s": src, "t": e.title, "l": e.link, "ts": ts})
     except: pass
+all_news.sort(key=lambda x: x['ts'], reverse=True)
 
-all_news.sort(key=lambda x: x['timestamp'], reverse=True)
+# 布局
+col_ai, col_news = st.columns([1, 1.5])
 
-c_ai, c_list = st.columns([1, 1.5])
+with col_ai:
+    # 显示历史分析记录
+    if len(st.session_state['ai_history']) > 0:
+        with st.expander("📜 查看之前的分析记录", expanded=False):
+            for i, report in enumerate(reversed(st.session_state['ai_history'])):
+                st.caption(f"分析时间: {report['time']}")
+                st.markdown(report['content'])
+                st.divider()
 
-with c_ai:
-    st.markdown("#### 🧠 DeepSeek 研报")
-    if st.button("⚡ 生成简报", type="primary"):
-        if not api_key: st.warning("请先设置 API Key")
+    # 生成新分析按钮
+    if st.button("⚡ 生成今日最新研报 (对比旧观点)", type="primary"):
+        if not api_key: st.warning("请配置 API Key")
         else:
-            context = "\n".join([f"- [{n['source']}] {n['title']}" for n in all_news[:10]])
+            # 1. 准备上下文
+            latest_news = "\n".join([f"- [{n['s']}] {n['t']}" for n in all_news[:10]])
+            
+            # 2. 获取上一条历史记录（如果有）
+            previous_context = ""
+            if len(st.session_state['ai_history']) > 0:
+                last_report = st.session_state['ai_history'][-1]['content']
+                previous_context = f"\n\n【你上一次的分析结论是】：\n{last_report}\n\n请将上面的旧观点与下面的新新闻进行比对："
+            else:
+                previous_context = "\n这是第一次分析，请建立基准观点。"
+
+            # 3. 构建超级 Prompt
+            prompt = f"""
+            你是一位专业的华尔街风控官。
+            {previous_context}
+
+            【今日最新新闻流】：
+            {latest_news}
+
+            请输出中文简报（Markdown格式），必须包含以下部分：
+            1. **🔄 观点变化**：(对比你上次的分析，市场情绪是变好了还是变坏了？)
+            2. **🚨 核心风险更新**：(当前最大的雷是什么？)
+            3. **💡 最新操作建议**：(针对SPY/QQQ的建议)
+            """
+
             try:
-                client = OpenAI(api_key=api_key, base_url=BASE_URL)
-                prompt = f"根据最新新闻分析美股风险:\n{context}\n输出中文简报: 1.风险评分 2.多空观点 3.操作建议"
-                with st.spinner("分析中..."):
+                with st.spinner("正在对比历史观点并分析新数据..."):
+                    client = OpenAI(api_key=api_key, base_url=BASE_URL)
                     resp = client.chat.completions.create(
                         model=MODEL_NAME, messages=[{"role":"user", "content":prompt}])
-                    st.success("完成")
-                    st.markdown(resp.choices[0].message.content)
+                    
+                    new_content = resp.choices[0].message.content
+                    
+                    # 4. 存入记忆
+                    st.session_state['ai_history'].append({
+                        'time': datetime.datetime.now().strftime('%H:%M'),
+                        'content': new_content
+                    })
+                    st.rerun() # 重新运行以显示最新结果
             except Exception as e: st.error(str(e))
 
-with c_list:
-    st.markdown("#### 📰 资讯流")
-    container = st.container(height=600)
-    with container:
-        for n in all_news[:25]:
-            label, color, score = analyze_sentiment_tag(n['title'])
-            st.markdown(f":{color}[**{label}**] {n['title']}")
-            st.caption(f"🕒 {n['time_str']} | {n['source']} | [原文]({n['link']})")
+    # 始终显示最新的一条分析
+    if len(st.session_state['ai_history']) > 0:
+        latest = st.session_state['ai_history'][-1]
+        st.success(f"📊 最新分析 ({latest['time']})")
+        st.markdown(latest['content'])
+    else:
+        st.info("👈 点击按钮生成今日第一份研报")
+
+with col_news:
+    st.markdown("#### 📰 实时资讯")
+    with st.container(height=600):
+        for n in all_news[:20]:
+            label, color = analyze_sentiment_tag(n['t'])
+            st.markdown(f":{color}[**{label}**] {n['t']}")
+            st.caption(f"{n['s']} | [原文]({n['l']})")
             st.divider()
 
 if refresh_rate: time.sleep(1)
