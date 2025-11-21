@@ -4,3 +4,5 @@ pandas
 feedparser
 openai
 textblob
+plotly
+requests
