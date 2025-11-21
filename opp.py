@@ -13,7 +13,7 @@ import time
 st.set_page_config(page_title="DeepSeek 智能风控系统", layout="wide", page_icon="🔒")
 
 # ============================================================
-#  🚫 模块 A: 身份验证系统 (Gatekeeper) - 保持不变
+#  🚫 模块 A: 身份验证系统 (Gatekeeper)
 # ============================================================
 
 def check_login():
@@ -138,7 +138,6 @@ def calculate_rsi(data, window=14):
 
 @st.cache_data(ttl=300)
 def get_market_data():
-    # 恢复 VIXY 数据获取
     return yf.Tickers("SPY QQQ IEF VIXY").history(period="3mo")
 
 # --- 主界面显示 ---
@@ -148,7 +147,7 @@ st.caption(f"数据快照时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:
 try:
     market_data = get_market_data()
     
-    # 1. 数据提取 (增加容错)
+    # 1. 数据提取
     def get_latest(ticker):
         try:
             s = market_data['Close'][ticker].dropna()
@@ -158,7 +157,7 @@ try:
     spy_val, spy_chg, spy_series = get_latest('SPY')
     qqq_val, qqq_chg, qqq_series = get_latest('QQQ')
     ief_val, ief_chg, ief_series = get_latest('IEF')
-    vix_val, vix_chg, vix_series = get_latest('VIXY') # 恢复 VIX
+    vix_val, vix_chg, vix_series = get_latest('VIXY')
     
     # 2. RSI 计算
     try:
@@ -173,19 +172,15 @@ try:
         cnn_score = rsi_val
         cnn_src = "RSI 模拟"
 
-    # === 恢复：5大核心指标卡片 ===
+    # === 5列核心指标卡片 ===
     st.subheader("1. 全球核心资产监控")
-    # 使用 5 列布局，恢复 VIX 和 RSI
     c1, c2, c3, c4, c5 = st.columns(5)
     
     c1.metric("📈 标普500 (SPY)", f"${spy_val:.1f}", f"{spy_chg:.2f}")
     c2.metric("💻 纳指科技 (QQQ)", f"${qqq_val:.1f}", f"{qqq_chg:.2f}")
     c3.metric("⚖️ 国债价格 (IEF)", f"${ief_val:.2f}", f"{ief_chg:.2f}", help="红跌=利率涨(利空)")
-    
-    # 恢复 VIX 卡片
     c4.metric("📉 恐慌 ETF (VIX)", f"${vix_val:.2f}", f"{vix_chg:.2f}", delta_color="inverse", help="上涨代表恐慌增加")
     
-    # 恢复 RSI 卡片与机会提示
     rsi_label = "中性"
     if rsi_val > 70: rsi_label = "🔴 过热风险"
     elif rsi_val < 30: rsi_label = "🟢 超卖机会"
@@ -197,20 +192,19 @@ try:
 
     st.markdown("---")
 
-    # === 恢复：交互式图表 (Tabs) 与 CNN 仪表盘 ===
+    # === 图表与仪表盘 ===
     col_chart, col_gauge = st.columns([2, 1])
 
     with col_chart:
         st.subheader("2. 趋势透视 (Interactive)")
-        # 恢复 Tabs 切换功能
         tab1, tab2, tab3 = st.tabs(["📊 核心资产", "😱 恐慌趋势", "🏦 利率压力"])
         
         with tab1:
             st.line_chart(pd.DataFrame({'SPY': spy_series, 'QQQ': qqq_series}), height=250)
         with tab2:
-            st.area_chart(vix_series, color="#FF4B4B", height=250) # 红色恐慌
+            st.area_chart(vix_series, color="#FF4B4B", height=250)
         with tab3:
-            st.line_chart(ief_series, color="#FFAA00", height=250) # 黄色国债
+            st.line_chart(ief_series, color="#FFAA00", height=250)
 
     with col_gauge:
         st.subheader("市场情绪表")
@@ -218,7 +212,7 @@ try:
 
 except Exception as e: st.error(f"数据加载异常: {e}")
 
-# --- AI 模块 (保留全部功能) ---
+# --- AI 模块 (结构优化版) ---
 st.markdown("---")
 st.subheader("3. DeepSeek 智能研报")
 
@@ -254,12 +248,42 @@ with col_ai:
         print(f"[AUDIT LOG] User '{user}' requested AI analysis at {datetime.datetime.now()}")
         
         latest_news = "\n".join([f"- [{n['s']}] {n['t']}" for n in all_news[:10]])
-        prev_ctx = f"\n旧观点参考：\n{st.session_state['ai_history'][-1]['content']}\n" if len(st.session_state['ai_history']) > 0 else "\n这是首次分析。"
-            
-        prompt = f"我是风控官。{prev_ctx}\n新数据：\n{latest_news}\n输出中文简报：1.观点变化 2.风险 3.建议"
+        
+        prev_ctx = ""
+        if len(st.session_state['ai_history']) > 0:
+            prev_ctx = f"\n\n【你上一次的分析结论】：\n{st.session_state['ai_history'][-1]['content']}\n\n请将上面的旧观点与下面的新新闻进行比对："
+        else:
+            prev_ctx = "\n这是今日首次分析，请建立基准观点。"
+
+        # 【关键修改】总览 + 深度 混合结构
+        prompt = f"""
+        你是一位拥有20年经验的华尔街顶级风控官。
+        {prev_ctx}
+
+        【今日最新新闻流】：
+        {latest_news}
+
+        请输出一份专业的风控简报（使用Markdown格式），必须严格按照以下结构：
+
+        ### ⚡ 一句话总览 (Executive Summary)
+        (用最简练的语言直击要害：当前市场是应该贪婪还是恐惧？)
+
+        ---
+        ### 1. 🔄 观点变化 (Viewpoint Shift)
+        (对比上一次分析，市场情绪变化逻辑)
+
+        ### 2. 🚨 核心风险预警 (Core Risks)
+        (当前最大的下行风险点：通胀/AI泡沫/地缘/财报)
+
+        ### 3. 🏦 机构多空分歧 (Institutional Divergence)
+        (高盛 vs 大摩等投行的观点对冲)
+
+        ### 4. 💡 交易员操作建议 (Actionable Advice)
+        (针对 SPY 和 QQQ 的具体操作建议)
+        """
         
         try:
-            with st.spinner("AI 思考中..."):
+            with st.spinner("AI 正在提炼核心观点..."):
                 client = OpenAI(api_key=api_key, base_url=BASE_URL)
                 resp = client.chat.completions.create(model=MODEL_NAME, messages=[{"role":"user", "content":prompt}])
                 st.session_state['ai_history'].append({'time': datetime.datetime.now().strftime('%H:%M'), 'content': resp.choices[0].message.content})
