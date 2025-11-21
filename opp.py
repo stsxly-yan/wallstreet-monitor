@@ -8,12 +8,40 @@ import plotly.graph_objects as go
 import requests
 import datetime
 import time
+import json
+import os
 
 # --- 1. 页面配置 ---
 st.set_page_config(page_title="DeepSeek 智能风控系统", layout="wide", page_icon="🔒")
 
 # ============================================================
-#  🚫 模块 A: 身份验证系统 (Gatekeeper)
+#  💾 模块 0: 持久化存储系统 (新增)
+# ============================================================
+HISTORY_FILE = "risk_report_history.json"
+
+def load_history_from_disk():
+    """从硬盘读取历史记录"""
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding='utf-8') as f:
+                return json.load(f)
+        except: return []
+    return []
+
+def save_history_to_disk(history_data):
+    """保存历史记录到硬盘"""
+    try:
+        with open(HISTORY_FILE, "w", encoding='utf-8') as f:
+            json.dump(history_data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Save failed: {e}")
+
+# 初始化 Session State，但优先从硬盘加载
+if 'ai_history' not in st.session_state:
+    st.session_state['ai_history'] = load_history_from_disk()
+
+# ============================================================
+#  🚫 模块 A: 身份验证系统
 # ============================================================
 
 def check_login():
@@ -61,8 +89,6 @@ api_key = st.secrets["DEEPSEEK_API_KEY"]
 MODEL_NAME = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
 
-if 'ai_history' not in st.session_state: st.session_state['ai_history'] = []
-
 # --- 侧边栏 ---
 st.sidebar.title("⚙️ 控制台")
 st.sidebar.write(f"👤 用户: **{st.session_state['username']}**")
@@ -74,6 +100,7 @@ if st.session_state['user_role'] == "admin":
     with st.sidebar.expander("🛠️ 管理员监控", expanded=False):
         st.write("**已开通用户:**")
         for u in st.secrets["users"]: st.write(f"- {u}")
+        st.caption("提示: 现在的历史记录已实现云端持久化存储")
 
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 立即刷新数据", type="primary"): st.rerun()
@@ -212,7 +239,7 @@ try:
 
 except Exception as e: st.error(f"数据加载异常: {e}")
 
-# --- AI 模块 (结构优化版) ---
+# --- AI 模块 (专业版 v5.0) ---
 st.markdown("---")
 st.subheader("3. DeepSeek 智能研报")
 
@@ -236,10 +263,14 @@ all_news.sort(key=lambda x: x['ts'], reverse=True)
 col_ai, col_news = st.columns([1, 1.5])
 
 with col_ai:
+    # 显示历史记录 (从磁盘加载)
+    # 每次都重新读取文件，确保看到最新的（即使是别人生成的）
+    st.session_state['ai_history'] = load_history_from_disk()
+    
     if len(st.session_state['ai_history']) > 0:
-        with st.expander("📜 查看历史记录"):
+        with st.expander("📜 查看历史记录 (已云端同步)", expanded=False):
             for report in reversed(st.session_state['ai_history']):
-                st.caption(f"🕒 {report['time']}")
+                st.caption(f"🕒 {report['time']} | 操作人: {report.get('user', 'Unknown')}")
                 st.markdown(report['content'])
                 st.divider()
 
@@ -255,7 +286,7 @@ with col_ai:
         else:
             prev_ctx = "\n这是今日首次分析，请建立基准观点。"
 
-        # 【关键修改】总览 + 深度 混合结构
+        # 【关键修改】回归专业模板 + 新增新闻焦点
         prompt = f"""
         你是一位拥有20年经验的华尔街顶级风控官。
         {prev_ctx}
@@ -263,36 +294,46 @@ with col_ai:
         【今日最新新闻流】：
         {latest_news}
 
-        请输出一份专业的风控简报（使用Markdown格式），必须严格按照以下结构：
+        请输出一份专业的风控简报（使用Markdown格式，务必包含以下章节）：
 
-        ### ⚡ 一句话总览 (Executive Summary)
-        (用最简练的语言直击要害：当前市场是应该贪婪还是恐惧？)
-
-        ---
         ### 1. 🔄 观点变化 (Viewpoint Shift)
-        (对比上一次分析，市场情绪变化逻辑)
+        (对比上一次分析，市场情绪是变好了还是变坏了？)
 
         ### 2. 🚨 核心风险预警 (Core Risks)
-        (当前最大的下行风险点：通胀/AI泡沫/地缘/财报)
+        (当前最大的下行风险点是什么？例如：通胀反弹/AI泡沫破裂/地缘政治)
 
-        ### 3. 🏦 机构多空分歧 (Institutional Divergence)
-        (高盛 vs 大摩等投行的观点对冲)
+        ### 3. 🔥 值得关注的新闻焦点 (Key News Focus)
+        (从新闻流中筛选出1-2条最值得交易员注意的具体新闻或言论，并简述原因)
 
-        ### 4. 💡 交易员操作建议 (Actionable Advice)
-        (针对 SPY 和 QQQ 的具体操作建议)
+        ### 4. 🏦 机构多空分歧 (Institutional Divergence)
+        (高盛、摩根士丹利等投行之间是否存在分歧？谁在看多，谁在看空？)
+
+        ### 5. 💡 交易员操作建议 (Actionable Advice)
+        (针对 SPY 和 QQQ 的具体操作建议：对冲/买入/观望？)
         """
         
         try:
-            with st.spinner("AI 正在提炼核心观点..."):
+            with st.spinner("AI 正在深度分析并归档..."):
                 client = OpenAI(api_key=api_key, base_url=BASE_URL)
                 resp = client.chat.completions.create(model=MODEL_NAME, messages=[{"role":"user", "content":prompt}])
-                st.session_state['ai_history'].append({'time': datetime.datetime.now().strftime('%H:%M'), 'content': resp.choices[0].message.content})
+                new_report = {
+                    'time': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'),
+                    'content': resp.choices[0].message.content,
+                    'user': user
+                }
+                
+                # 更新内存
+                st.session_state['ai_history'].append(new_report)
+                # 写入硬盘 (持久化)
+                save_history_to_disk(st.session_state['ai_history'])
+                
                 st.rerun()
         except Exception as e: st.error(str(e))
 
     if len(st.session_state['ai_history']) > 0:
-        st.success(f"📊 最新分析 ({st.session_state['ai_history'][-1]['time']})")
-        st.markdown(st.session_state['ai_history'][-1]['content'])
+        latest = st.session_state['ai_history'][-1]
+        st.success(f"📊 最新分析 ({latest['time']})")
+        st.markdown(latest['content'])
 
 with col_news:
     st.markdown("#### 📰 实时资讯流")
