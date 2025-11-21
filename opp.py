@@ -10,41 +10,92 @@ import datetime
 import time
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="DeepSeek 智能风控仪表盘", layout="wide", page_icon="🦈")
+st.set_page_config(page_title="DeepSeek 智能风控系统", layout="wide", page_icon="🔒")
 
-# --- 2. 侧边栏：控制中心 ---
-st.sidebar.title("⚙️ 控制中心")
+# --- 2. 身份验证系统 (Gatekeeper) ---
 
-# A. 自动获取 Secrets 中的 API Key
-# 优先读取云端后台配置，如果没有，再显示输入框
-if "DEEPSEEK_API_KEY" in st.secrets:
-    api_key = st.secrets["DEEPSEEK_API_KEY"]
-    st.sidebar.success("✅ API Key 已从云端安全加载")
-else:
-    api_key = st.sidebar.text_input("DeepSeek API Key", type="password", placeholder="sk-...")
+def check_login():
+    """简单的登录逻辑，读取 Secrets 中的用户列表"""
+    if 'logged_in' not in st.session_state:
+        st.session_state['logged_in'] = False
+        st.session_state['user_role'] = None
+        st.session_state['username'] = None
 
+    # 如果已登录，直接返回 True
+    if st.session_state['logged_in']:
+        return True
+
+    # 登录界面
+    st.markdown("## 🔒 华尔街风控系统 (专业版)")
+    st.info("本系统仅限受邀用户使用。")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        username = st.text_input("账号 (Username)")
+        password = st.text_input("密码 (Password)", type="password")
+        
+        if st.button("登录 / Login"):
+            # 1. 检查管理员
+            if username == st.secrets["admin"]["username"] and password == st.secrets["admin"]["password"]:
+                st.session_state['logged_in'] = True
+                st.session_state['user_role'] = "admin"
+                st.session_state['username'] = username
+                st.success("管理员登录成功！")
+                time.sleep(1)
+                st.rerun()
+            
+            # 2. 检查普通用户
+            elif username in st.secrets["users"] and password == st.secrets["users"][username]:
+                st.session_state['logged_in'] = True
+                st.session_state['user_role'] = "user"
+                st.session_state['username'] = username
+                st.success(f"欢迎回来, {username}")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("账号或密码错误，请联系管理员开通。")
+    
+    return False
+
+# 如果没登录，停止执行后面代码
+if not check_login():
+    st.stop()
+
+# ============================================================
+#  以下是登录后才能看到的内容 (Main App)
+# ============================================================
+
+# 获取 API Key
+api_key = st.secrets["DEEPSEEK_API_KEY"]
 MODEL_NAME = "deepseek-chat"
 BASE_URL = "https://api.deepseek.com"
 
-# B. 刷新控制
+# --- 侧边栏：用户信息 & 管理员面板 ---
+st.sidebar.title("👤 用户中心")
+st.sidebar.write(f"当前用户: **{st.session_state['username']}**")
+
+if st.sidebar.button("退出登录 (Logout)"):
+    st.session_state['logged_in'] = False
+    st.rerun()
+
+# 管理员专属：用量监控面板
+if st.session_state['user_role'] == "admin":
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🛠️ 管理员监控")
+    st.sidebar.info("💡 用量日志请在 Streamlit Cloud 后台点击 'Manage app' -> 'Logs' 查看详细记录。")
+    st.sidebar.markdown("**已开通用户列表:**")
+    for u in st.secrets["users"]:
+        st.sidebar.text(f"- {u}")
+
+st.sidebar.markdown("---")
+
+# --- 原有功能区 ---
 st.sidebar.subheader("⏱️ 刷新设置")
 if st.sidebar.button("🔄 立即刷新数据", type="primary"):
     st.rerun()
-
 refresh_rate = st.sidebar.slider("自动刷新 (分钟)", 5, 60, 30)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🔗 快捷入口")
-st.sidebar.markdown("[📅 财经日历](https://cn.investing.com/economic-calendar/)")
-st.sidebar.caption(f"更新时间: {datetime.datetime.now().strftime('%H:%M:%S')}")
-
-# --- 3. 初始化 AI 记忆 (Session State) ---
-# 这是页面刷新不丢失内容的关键
-if 'ai_history' not in st.session_state:
-    st.session_state['ai_history'] = [] # 存储历史报告列表
-
-# --- 4. 核心逻辑函数 ---
-
+# --- 核心逻辑函数 ---
 @st.cache_data(ttl=3600) 
 def get_cnn_fear_greed_index():
     try:
@@ -90,12 +141,11 @@ def analyze_sentiment_tag(text):
 def get_market_data():
     return yf.Tickers("SPY QQQ IEF").history(period="3mo")
 
-# --- 5. 主界面 ---
-st.title("🦈 华尔街风向标 (AI Memory Ver.)")
-st.caption(f"当前时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+# --- 主界面 ---
+st.title("🦈 华尔街风控系统 (Enterprise)")
+st.caption(f"更新时间: {datetime.datetime.now().strftime('%H:%M:%S')}")
 
 try:
-    # 数据与图表
     market_data = get_market_data()
     spy = market_data['Close']['SPY'].dropna()
     qqq = market_data['Close']['QQQ'].dropna()
@@ -103,32 +153,29 @@ try:
     
     cnn_score, cnn_src = get_cnn_fear_greed_index()
     if cnn_score is None:
-        # RSI Backup
         delta = spy.diff()
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rs = gain / loss
         cnn_score = 100 - (100 / (1 + rs)).iloc[-1]
-        cnn_src = "RSI 模拟值"
+        cnn_src = "RSI 模拟"
 
     c1, c2 = st.columns([2, 1])
     with c1:
-        st.subheader("1. 核心资产")
+        st.subheader("核心资产")
         m1, m2, m3 = st.columns(3)
         m1.metric("标普500", f"${spy.iloc[-1]:.1f}", f"{spy.iloc[-1]-spy.iloc[-2]:.2f}")
         m2.metric("纳指QQQ", f"${qqq.iloc[-1]:.1f}", f"{qqq.iloc[-1]-qqq.iloc[-2]:.2f}")
         m3.metric("国债IEF", f"${ief.iloc[-1]:.1f}", f"{ief.iloc[-1]-ief.iloc[-2]:.2f}")
         st.line_chart(pd.DataFrame({'SPY': spy, 'QQQ': qqq}), height=200)
-    
     with c2:
-        st.subheader("情绪表")
         st.plotly_chart(plot_gauge(cnn_score, cnn_src), use_container_width=True)
 
 except Exception as e: st.error(f"数据错误: {e}")
 
-# --- 6. AI 智能情报台 (含记忆功能) ---
+# --- AI 模块 (带审计日志) ---
 st.markdown("---")
-st.subheader("3. DeepSeek 智能研报 (带历史记忆)")
+st.subheader("DeepSeek 智能研报")
 
 rss_feeds = {
     "Goldman": "https://news.google.com/rss/search?q=Goldman+Sachs+outlook+when:7d&hl=en-US&gl=US&ceid=US:en",
@@ -136,7 +183,6 @@ rss_feeds = {
     "Risk": "https://news.google.com/rss/search?q=stock+market+crash+warning+when:2d&hl=en-US&gl=US&ceid=US:en"
 }
 
-# 抓取新闻
 all_news = []
 for src, url in rss_feeds.items():
     try:
@@ -147,78 +193,56 @@ for src, url in rss_feeds.items():
     except: pass
 all_news.sort(key=lambda x: x['ts'], reverse=True)
 
-# 布局
+if 'ai_history' not in st.session_state: st.session_state['ai_history'] = []
+
 col_ai, col_news = st.columns([1, 1.5])
 
 with col_ai:
-    # 显示历史分析记录
+    # 历史记录
     if len(st.session_state['ai_history']) > 0:
-        with st.expander("📜 查看之前的分析记录", expanded=False):
-            for i, report in enumerate(reversed(st.session_state['ai_history'])):
-                st.caption(f"分析时间: {report['time']}")
+        with st.expander("📜 历史记录"):
+            for report in reversed(st.session_state['ai_history']):
+                st.caption(f"{report['time']}")
                 st.markdown(report['content'])
                 st.divider()
 
-    # 生成新分析按钮
-    if st.button("⚡ 生成今日最新研报 (对比旧观点)", type="primary"):
-        if not api_key: st.warning("请配置 API Key")
-        else:
-            # 1. 准备上下文
-            latest_news = "\n".join([f"- [{n['s']}] {n['t']}" for n in all_news[:10]])
+    # 生成按钮
+    if st.button("⚡ 生成最新研报", type="primary"):
+        # 【关键】记录谁点击了按钮
+        user = st.session_state['username']
+        print(f"[AUDIT LOG] User '{user}' requested AI analysis at {datetime.datetime.now()}")
+        
+        # 准备上下文
+        latest_news = "\n".join([f"- [{n['s']}] {n['t']}" for n in all_news[:10]])
+        prev_ctx = ""
+        if len(st.session_state['ai_history']) > 0:
+            prev_ctx = f"\n旧观点参考：\n{st.session_state['ai_history'][-1]['content']}\n"
             
-            # 2. 获取上一条历史记录（如果有）
-            previous_context = ""
-            if len(st.session_state['ai_history']) > 0:
-                last_report = st.session_state['ai_history'][-1]['content']
-                previous_context = f"\n\n【你上一次的分析结论是】：\n{last_report}\n\n请将上面的旧观点与下面的新新闻进行比对："
-            else:
-                previous_context = "\n这是第一次分析，请建立基准观点。"
+        prompt = f"我是风控官，参考旧观点(如有)：{prev_ctx}\n分析新数据：\n{latest_news}\n输出中文简报：1.观点变化 2.风险 3.建议"
+        
+        try:
+            with st.spinner("AI 思考中..."):
+                client = OpenAI(api_key=api_key, base_url=BASE_URL)
+                resp = client.chat.completions.create(
+                    model=MODEL_NAME, messages=[{"role":"user", "content":prompt}])
+                res_txt = resp.choices[0].message.content
+                
+                st.session_state['ai_history'].append({
+                    'time': datetime.datetime.now().strftime('%H:%M'),
+                    'content': res_txt
+                })
+                st.rerun()
+        except Exception as e: st.error(str(e))
 
-            # 3. 构建超级 Prompt
-            prompt = f"""
-            你是一位专业的华尔街风控官。
-            {previous_context}
-
-            【今日最新新闻流】：
-            {latest_news}
-
-            请输出中文简报（Markdown格式），必须包含以下部分：
-            1. **🔄 观点变化**：(对比你上次的分析，市场情绪是变好了还是变坏了？)
-            2. **🚨 核心风险更新**：(当前最大的雷是什么？)
-            3. **💡 最新操作建议**：(针对SPY/QQQ的建议)
-            """
-
-            try:
-                with st.spinner("正在对比历史观点并分析新数据..."):
-                    client = OpenAI(api_key=api_key, base_url=BASE_URL)
-                    resp = client.chat.completions.create(
-                        model=MODEL_NAME, messages=[{"role":"user", "content":prompt}])
-                    
-                    new_content = resp.choices[0].message.content
-                    
-                    # 4. 存入记忆
-                    st.session_state['ai_history'].append({
-                        'time': datetime.datetime.now().strftime('%H:%M'),
-                        'content': new_content
-                    })
-                    st.rerun() # 重新运行以显示最新结果
-            except Exception as e: st.error(str(e))
-
-    # 始终显示最新的一条分析
     if len(st.session_state['ai_history']) > 0:
-        latest = st.session_state['ai_history'][-1]
-        st.success(f"📊 最新分析 ({latest['time']})")
-        st.markdown(latest['content'])
-    else:
-        st.info("👈 点击按钮生成今日第一份研报")
+        st.success(f"📊 最新分析")
+        st.markdown(st.session_state['ai_history'][-1]['content'])
 
 with col_news:
-    st.markdown("#### 📰 实时资讯")
+    st.markdown("#### 📰 资讯流")
     with st.container(height=600):
         for n in all_news[:20]:
             label, color = analyze_sentiment_tag(n['t'])
             st.markdown(f":{color}[**{label}**] {n['t']}")
             st.caption(f"{n['s']} | [原文]({n['l']})")
             st.divider()
-
-if refresh_rate: time.sleep(1)
